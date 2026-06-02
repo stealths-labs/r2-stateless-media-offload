@@ -2,7 +2,7 @@
 
 Offload your WordPress media library to **Cloudflare R2** — zero egress fees, S3-compatible, and stateless. A clean-room, open-source alternative to wp-stateless, built for R2.
 
-[![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0)
+[![License: GPLv2+](https://img.shields.io/badge/License-GPLv2--or--later-blue.svg)](https://www.gnu.org/licenses/gpl-2.0)
 [![WordPress](https://img.shields.io/badge/WordPress-6.0%2B-21759b.svg)](https://wordpress.org/)
 [![PHP](https://img.shields.io/badge/PHP-7.4%2B-777bb4.svg)](https://www.php.net/)
 

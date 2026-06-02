@@ -27,12 +27,8 @@ services:
       WORDPRESS_DB_USER: wordpress
       WORDPRESS_DB_PASSWORD: wordpress
       WORDPRESS_DB_NAME: wordpress
-      WORDPRESS_CONFIG_EXTRA: |
-        define( 'R2OFFLOAD_ACCOUNT_ID',   getenv('R2OFFLOAD_ACCOUNT_ID') );
-        define( 'R2OFFLOAD_BUCKET',       getenv('R2OFFLOAD_BUCKET') );
-        define( 'R2OFFLOAD_ACCESS_KEY',   getenv('R2OFFLOAD_ACCESS_KEY') );
-        define( 'R2OFFLOAD_SECRET_KEY',   getenv('R2OFFLOAD_SECRET_KEY') );
-        define( 'R2OFFLOAD_CUSTOM_DOMAIN',getenv('R2OFFLOAD_CUSTOM_DOMAIN') ?: '' );
+      # R2 credentials are injected into wp-config as constants by
+      # bin/dev-setup.sh (via `wp config set`), which reads these env vars.
       R2OFFLOAD_ACCOUNT_ID: ${R2OFFLOAD_ACCOUNT_ID}
       R2OFFLOAD_BUCKET: ${R2OFFLOAD_BUCKET}
       R2OFFLOAD_ACCESS_KEY: ${R2OFFLOAD_ACCESS_KEY}

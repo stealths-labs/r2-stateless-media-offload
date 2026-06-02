@@ -96,18 +96,47 @@ class Settings {
 	 * @return string
 	 */
 	private function decrypt( $stored ) {
-		if ( 0 !== strpos( $stored, 'r2enc:' ) || ! function_exists( 'openssl_decrypt' ) ) {
+		// No marker → legitimate legacy plaintext, return as-is.
+		if ( 0 !== strpos( $stored, 'r2enc:' ) ) {
 			return $stored;
+		}
+		// Marked as encrypted but we can't decrypt → surface, don't silently blank.
+		$fail = function ( $why ) {
+			error_log( 'r2offload: could not decrypt stored secret (' . $why . '). The site auth salt may have rotated — re-enter the Secret Access Key.' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return '';
+		};
+		if ( ! function_exists( 'openssl_decrypt' ) ) {
+			return $fail( 'OpenSSL unavailable' );
 		}
 		$raw = base64_decode( substr( $stored, 6 ), true );
 		if ( false === $raw || strlen( $raw ) <= 16 ) {
-			return '';
+			return $fail( 'corrupt ciphertext' );
 		}
 		$iv     = substr( $raw, 0, 16 );
 		$cipher = substr( $raw, 16 );
 		$key    = hash( 'sha256', wp_salt( 'auth' ), true );
 		$plain  = openssl_decrypt( $cipher, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv );
-		return ( false === $plain ) ? '' : $plain;
+		return ( false === $plain ) ? $fail( 'wrong key' ) : $plain;
+	}
+
+	/**
+	 * Resolve an offloaded attachment's original R2 key, or false when it isn't
+	 * offloaded. Single source of truth shared by the URL rewriter, the
+	 * stateless read path, and deletes.
+	 *
+	 * @param int $attachment_id
+	 * @return string|false
+	 */
+	public function resolve_object_key( $attachment_id ) {
+		$key = (string) get_post_meta( $attachment_id, '_r2offload_key', true );
+		if ( '' === $key ) {
+			$synced = get_post_meta( $attachment_id, '_r2offload_synced', true );
+			$file   = (string) get_post_meta( $attachment_id, '_wp_attached_file', true );
+			if ( $synced && '' !== $file ) {
+				$key = $this->object_key( $file );
+			}
+		}
+		return ( '' === $key ) ? false : $key;
 	}
 
 	/**

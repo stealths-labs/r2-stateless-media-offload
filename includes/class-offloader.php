@@ -55,10 +55,16 @@ class Offloader {
 			return $metadata;
 		}
 
+		$original_relative = isset( $metadata['file'] )
+			? $metadata['file']
+			: (string) get_post_meta( $attachment_id, '_wp_attached_file', true );
+		$original_key = $this->settings->object_key( $original_relative );
+
 		$cache_control = $this->settings->get( 'cache_control' );
 		$headers       = ( '' !== $cache_control ) ? array( 'Cache-Control' => $cache_control ) : array();
 		$uploaded      = 0;
-		$uploaded_paths = array();
+		$uploaded_paths   = array();
+		$original_uploaded = false;
 
 		foreach ( $files as $local_path => $key ) {
 			if ( ! is_readable( $local_path ) ) {
@@ -71,18 +77,19 @@ class Offloader {
 			}
 			++$uploaded;
 			$uploaded_paths[] = $local_path;
+			if ( $key === $original_key ) {
+				$original_uploaded = true;
+			}
 		}
 
-		if ( $uploaded > 0 ) {
+		// Only mark the attachment offloaded once the ORIGINAL is in R2 — a
+		// stray size upload must not flag media that isn't fully present.
+		if ( $original_uploaded ) {
 			update_post_meta( $attachment_id, '_r2offload_synced', 1 );
 			update_post_meta( $attachment_id, '_r2offload_synced_at', time() );
-			// Store the original's actual R2 key so readers (URL rewriter,
-			// stream wrapper) resolve it independently of the current
-			// path_prefix setting — keeps existing media valid if it changes.
-			$original_relative = isset( $metadata['file'] )
-				? $metadata['file']
-				: get_post_meta( $attachment_id, '_wp_attached_file', true );
-			update_post_meta( $attachment_id, '_r2offload_key', $this->settings->object_key( $original_relative ) );
+			// Store the original's actual R2 key so readers resolve it
+			// independently of the current path_prefix setting.
+			update_post_meta( $attachment_id, '_r2offload_key', $original_key );
 
 			// Stateless mode: now that every file is safely in R2, drop the
 			// local copies we actually uploaded (never anything we skipped).

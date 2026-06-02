@@ -31,17 +31,20 @@ if [ "$db_ready" != true ]; then
   exit 1
 fi
 
-echo "==> Installing WordPress (idempotent)"
-docker compose run --rm wpcli wp core install \
-  --url=http://localhost:8765 \
-  --title="R2 Offload Dev" \
-  --admin_user=admin --admin_password=admin \
-  --admin_email=dev@example.com --skip-email 2>/dev/null || true
+echo "==> Installing WordPress"
+if ! docker compose run --rm wpcli wp core is-installed >/dev/null 2>&1; then
+  docker compose run --rm wpcli wp core install \
+    --url=http://localhost:8765 \
+    --title="R2 Offload Dev" \
+    --admin_user=admin --admin_password=admin \
+    --admin_email=dev@example.com --skip-email
+fi
 
 echo "==> Injecting R2 credentials as wp-config constants"
 docker compose run --rm wpcli sh -c '
+  set -e
   for c in R2OFFLOAD_ACCOUNT_ID R2OFFLOAD_BUCKET R2OFFLOAD_ACCESS_KEY R2OFFLOAD_SECRET_KEY R2OFFLOAD_CUSTOM_DOMAIN; do
-    wp config set "$c" "$(printenv $c)" --type=constant >/dev/null 2>&1 || true
+    wp config set "$c" "$(printenv "$c")" --type=constant >/dev/null
   done
 '
 
@@ -52,4 +55,5 @@ echo "==> Running validation gate"
 docker compose run --rm wpcli wp r2offload test
 
 echo
-echo "Done. WordPress: http://localhost:8765/wp-admin  (admin / admin)"
+echo "Done. WordPress: http://localhost:8765/wp-admin"
+echo "Local development credentials: admin / admin  (DO NOT use outside local dev)"

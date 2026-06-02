@@ -104,14 +104,6 @@ class Local_Fallback {
 	 * @return string|false
 	 */
 	private function original_key( $attachment_id ) {
-		$key = (string) get_post_meta( $attachment_id, '_r2offload_key', true );
-		if ( '' === $key ) {
-			$synced = get_post_meta( $attachment_id, '_r2offload_synced', true );
-			$file   = (string) get_post_meta( $attachment_id, '_wp_attached_file', true );
-			if ( $synced && '' !== $file ) {
-				$key = $this->settings->object_key( $file );
-			}
-		}
-		return ( '' === $key ) ? false : $key;
+		return $this->settings->resolve_object_key( $attachment_id );
 	}
 }
