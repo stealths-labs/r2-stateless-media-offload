@@ -246,15 +246,19 @@ class R2_Client {
 	 * @return string
 	 */
 	public function get_object_url( $key ) {
+		// Percent-encode each key segment so the served URL is valid for keys
+		// with spaces / non-ASCII characters (no-op for plain ASCII keys). The
+		// edge/origin decodes it back to the raw object key on lookup.
+		$path   = $this->encode_path( '/' . ltrim( $key, '/' ) );
 		$domain = $this->settings->get( 'custom_domain' );
 		if ( '' !== $domain ) {
 			$domain = rtrim( $domain, '/' );
 			if ( 0 !== strpos( $domain, 'http' ) ) {
 				$domain = 'https://' . $domain;
 			}
-			return $domain . '/' . ltrim( $key, '/' );
+			return $domain . $path;
 		}
-		return $this->endpoint() . '/' . ltrim( $key, '/' );
+		return $this->endpoint() . $path;
 	}
 
 	// -----------------------------------------------------------------
@@ -292,7 +296,12 @@ class R2_Client {
 
 		$host   = $this->host();
 		$bucket = $this->settings->get( 'bucket' );
-		$uri    = '/' . rawurlencode( $bucket ) . $path;
+		// Encode the path ONCE here (each segment, slashes preserved) and reuse
+		// the exact same string for both the canonical request and the actual
+		// URL. Encoding in only one of the two places — or twice in one — makes
+		// the signed path differ from the sent path and R2 returns a 403 for any
+		// key with characters rawurlencode touches (spaces, non-ASCII filenames).
+		$uri = '/' . rawurlencode( $bucket ) . $this->encode_path( $path );
 
 		$now      = time();
 		$date     = gmdate( 'Ymd', $now );
@@ -328,7 +337,7 @@ class R2_Client {
 			"\n",
 			array(
 				$method,
-				$this->encode_path( $uri ),
+				$uri, // Already encoded above; must match the request URL exactly.
 				$canonical_query,
 				$canonical_headers,
 				$signed_headers,
