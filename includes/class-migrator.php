@@ -28,9 +28,10 @@ defined( 'ABSPATH' ) || exit;
  */
 class Migrator {
 
-	const META_SYNCED    = '_r2offload_synced';
-	const META_SYNCED_AT = '_r2offload_synced_at';
-	const META_KEY       = '_r2offload_key';
+	// Aliases of the canonical keys on Settings (single source of truth).
+	const META_SYNCED    = Settings::META_SYNCED;
+	const META_SYNCED_AT = Settings::META_SYNCED_AT;
+	const META_KEY       = Settings::META_KEY;
 
 	/** @var R2_Client */
 	private $client;

@@ -17,6 +17,12 @@ class Settings {
 
 	const OPTION_KEY = 'r2offload_settings';
 
+	// Post-meta keys — single source of truth shared by the offloader,
+	// migrator, URL rewriter, stateless read path and delete path.
+	const META_SYNCED    = '_r2offload_synced';
+	const META_SYNCED_AT = '_r2offload_synced_at';
+	const META_KEY       = '_r2offload_key';
+
 	/**
 	 * Map of setting key => wp-config constant name.
 	 *
@@ -141,11 +147,17 @@ class Settings {
 	 * @return string|false
 	 */
 	public function resolve_object_key( $attachment_id ) {
-		$key = (string) get_post_meta( $attachment_id, '_r2offload_key', true );
+		// Require the synced flag for BOTH key sources: a stored key left behind
+		// after the flag was cleared (manual cleanup, partial write) must not
+		// make the rewriter or stateless read path serve from R2 for media that
+		// isn't fully offloaded. Mirrors the guard in Offloader::r2_keys_for().
+		if ( ! get_post_meta( $attachment_id, self::META_SYNCED, true ) ) {
+			return false;
+		}
+		$key = (string) get_post_meta( $attachment_id, self::META_KEY, true );
 		if ( '' === $key ) {
-			$synced = get_post_meta( $attachment_id, '_r2offload_synced', true );
-			$file   = (string) get_post_meta( $attachment_id, '_wp_attached_file', true );
-			if ( $synced && '' !== $file ) {
+			$file = (string) get_post_meta( $attachment_id, '_wp_attached_file', true );
+			if ( '' !== $file ) {
 				$key = $this->object_key( $file );
 			}
 		}

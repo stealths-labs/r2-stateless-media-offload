@@ -89,11 +89,11 @@ class Offloader {
 		// are in R2 — a stray size upload (or a skipped, missing variant) must
 		// not flag media that isn't fully present.
 		if ( $original_uploaded && $all_present ) {
-			update_post_meta( $attachment_id, '_r2offload_synced', 1 );
-			update_post_meta( $attachment_id, '_r2offload_synced_at', time() );
+			update_post_meta( $attachment_id, Settings::META_SYNCED, 1 );
+			update_post_meta( $attachment_id, Settings::META_SYNCED_AT, time() );
 			// Store the original's actual R2 key so readers resolve it
 			// independently of the current path_prefix setting.
-			update_post_meta( $attachment_id, '_r2offload_key', $original_key );
+			update_post_meta( $attachment_id, Settings::META_KEY, $original_key );
 
 			// Stateless mode: now that every file is safely in R2, drop the
 			// local copies we actually uploaded (never anything we skipped).
@@ -139,12 +139,12 @@ class Offloader {
 	 * @return string[]
 	 */
 	private function r2_keys_for( $attachment_id ) {
-		if ( ! get_post_meta( $attachment_id, '_r2offload_synced', true ) ) {
+		if ( ! get_post_meta( $attachment_id, Settings::META_SYNCED, true ) ) {
 			return array();
 		}
 
 		$relative = (string) get_post_meta( $attachment_id, '_wp_attached_file', true );
-		$original = (string) get_post_meta( $attachment_id, '_r2offload_key', true );
+		$original = (string) get_post_meta( $attachment_id, Settings::META_KEY, true );
 		if ( '' === $original ) {
 			if ( '' === $relative ) {
 				return array();
