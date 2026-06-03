@@ -177,16 +177,14 @@ class Migration_Runner {
 		$state['started_at'] = time();
 		update_option( self::STATE_OPTION, $state, false );
 
-		// Clear any lock orphaned by a worker that died mid-batch (OOM/kill before
-		// release). release_lock() only deletes a lock THIS request acquired, so
-		// without this every tick of the fresh run would lose acquire_lock() until
-		// the stale lock's TTL (up to 30 min) expired. Safe here because the new
-		// run_id above makes any still-alive prior worker discard its writes, so
-		// clearing its lock can't double-process a batch. (stop()/resume() keep the
-		// run_id and so must NOT force-clear — there the lock is what prevents a
-		// resumed run from overlapping a worker still finishing its batch.)
-		$this->force_clear_lock();
-
+		// NB: we deliberately do NOT force-delete any existing lock here. A lock
+		// can't be told apart from a still-alive-but-slow worker's lock at a single
+		// point in time (its TTL is the only liveness signal), so clearing it would
+		// admit a second worker on the same library whenever a prior run is merely
+		// slow — the per-item uploads/meta writes overlap before run_id can discard
+		// the stale worker's state. A lock orphaned by a crashed worker instead
+		// self-heals through acquire_lock()'s expired-lock CAS reclaim within
+		// LOCK_TTL. Correctness (one worker) is worth more than instant restart.
 		$this->schedule_next();
 		return $state;
 	}
@@ -578,20 +576,6 @@ class Migration_Runner {
 				$this->lock_value
 			)
 		);
-		wp_cache_delete( self::LOCK_OPTION, 'options' );
-		$this->lock_value = '';
-	}
-
-	/**
-	 * Delete the batch lock unconditionally — regardless of which (possibly dead)
-	 * worker owns it. release_lock() is ownership-checked and so can't reap a lock
-	 * left by a crashed process; start() uses this to clear such an orphan before a
-	 * fresh run. The new run_id minted by start() protects against a still-alive
-	 * prior worker, so this can't admit a double-processing race. cleanup_site()
-	 * (deactivation) does the same delete_option for the same reason.
-	 */
-	private function force_clear_lock() {
-		delete_option( self::LOCK_OPTION );
 		wp_cache_delete( self::LOCK_OPTION, 'options' );
 		$this->lock_value = '';
 	}

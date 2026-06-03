@@ -134,7 +134,9 @@ class URL_Rewriter {
 	 * @return string
 	 */
 	public function filter_attachment_url( $url, $attachment_id ) {
-		if ( self::is_suppressed() ) {
+		// Don't fabricate an R2 URL when WordPress produced none (false/empty), and
+		// stay consistent with the other render filters' input guards.
+		if ( self::is_suppressed() || ! is_string( $url ) || '' === $url ) {
 			return $url;
 		}
 		$key = $this->original_key( (int) $attachment_id );
