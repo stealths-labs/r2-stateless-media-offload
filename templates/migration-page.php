@@ -46,6 +46,16 @@ $r2offload_configured = $settings->is_configured();
 		</p></div>
 	<?php endif; ?>
 
+	<?php if ( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON ) : ?>
+		<div class="notice notice-info"><p>
+			<?php
+			echo wp_kses_post(
+				__( '<strong>WP-Cron is disabled on this site</strong> (<code>DISABLE_WP_CRON</code>). Background batches then run only while this page is open, or via your server’s system cron calling <code>wp-cron.php</code>. If neither applies, the migration will pause when you leave — keep this page open, or run the WP-CLI command <code>wp r2offload sync</code> instead.', 'r2-stateless-media-offload' )
+			);
+			?>
+		</p></div>
+	<?php endif; ?>
+
 	<table class="form-table" role="presentation">
 		<tr>
 			<th scope="row"><label for="r2offload-mig-mode"><?php esc_html_e( 'Mode', 'r2-stateless-media-offload' ); ?></label></th>
@@ -69,7 +79,8 @@ $r2offload_configured = $settings->is_configured();
 	}
 	?>
 	<p>
-		<button type="button" class="button button-primary" id="r2offload-mig-start" <?php disabled( ! $r2offload_configured || ! empty( $state['running'] ) ); ?>>
+		<?php // Not gated on credentials: a dry-run preview (count + size) runs without them, matching `wp r2offload sync --dry-run`. Upload/verify without credentials return a clear error. ?>
+		<button type="button" class="button button-primary" id="r2offload-mig-start" <?php disabled( ! empty( $state['running'] ) ); ?>>
 			<?php esc_html_e( 'Start', 'r2-stateless-media-offload' ); ?>
 		</button>
 		<button type="button" class="button" id="r2offload-mig-resume" <?php disabled( ! $r2offload_resumable ); ?> style="<?php echo $r2offload_resumable ? '' : 'display:none;'; ?>">

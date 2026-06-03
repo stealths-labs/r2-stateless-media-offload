@@ -116,17 +116,23 @@ jQuery(function($){
 	}
 	function startPolling(){ if(!polling){ polling = true; poll(); } }
 
+	function showError(res, fallback){
+		$txt.text((res && res.data && res.data.message) ? res.data.message : fallback);
+	}
 	$start.on('click', function(){
 		$.post(ajaxurl, { action:'r2offload_migrate_start', nonce:R2OFFLOAD_MIG.nonce, mode:$mode.val() })
-			.done(function(res){ if(res && res.success){ render(res.data); startPolling(); } });
+			.done(function(res){ if(res && res.success){ render(res.data); startPolling(); } else { showError(res, 'Could not start the migration.'); } })
+			.fail(function(){ $txt.text('Connection lost — reload or try again.'); });
 	});
 	$resume.on('click', function(){
 		$.post(ajaxurl, { action:'r2offload_migrate_resume', nonce:R2OFFLOAD_MIG.nonce })
-			.done(function(res){ if(res && res.success){ render(res.data); if(res.data.running){ startPolling(); } } });
+			.done(function(res){ if(res && res.success){ render(res.data); if(res.data.running){ startPolling(); } } else { showError(res, 'Could not resume the migration.'); } })
+			.fail(function(){ $txt.text('Connection lost — reload or try again.'); });
 	});
 	$stop.on('click', function(){
 		$.post(ajaxurl, { action:'r2offload_migrate_stop', nonce:R2OFFLOAD_MIG.nonce })
-			.done(function(res){ if(res && res.success){ render(res.data); } });
+			.done(function(res){ if(res && res.success){ render(res.data); } else { showError(res, 'Could not stop the migration.'); } })
+			.fail(function(){ $txt.text('Connection lost — reload or try again.'); });
 	});
 
 	// Initial state + resume polling if a migration is already running.
@@ -183,11 +189,16 @@ JS;
 	 */
 	public function ajax_resume() {
 		$this->guard();
-		if ( ! $this->settings->is_configured() ) {
+		$state = $this->runner->state();
+		// A stopped dry-run never needed credentials, so let it resume without
+		// them (matching ajax_start). Upload/verify still require configuration.
+		if ( 'dry-run' !== ( isset( $state['mode'] ) ? (string) $state['mode'] : '' ) && ! $this->settings->is_configured() ) {
 			wp_send_json_error( array( 'message' => __( 'Configure R2 credentials first.', 'r2-stateless-media-offload' ) ) );
+			return; // wp_send_json_error already exits; explicit for static analysis.
 		}
-		if ( ! $this->runner->is_resumable( $this->runner->state() ) ) {
+		if ( ! $this->runner->is_resumable( $state ) ) {
 			wp_send_json_error( array( 'message' => __( 'There is no stopped migration to resume.', 'r2-stateless-media-offload' ) ) );
+			return; // wp_send_json_error already exits; explicit for static analysis.
 		}
 		$this->respond( $this->runner->resume() );
 	}
