@@ -103,7 +103,7 @@ class Local_Fallback {
 			return $path;
 		}
 		$dir = dirname( $original );
-		$dir = ( '.' === $dir || '' === $dir ) ? '' : trailingslashit( $dir );
+		$dir = ( '.' === $dir ) ? '' : trailingslashit( $dir );
 		$key = $dir . wp_basename( $path );
 		$tmp = $this->restore_to_temp( $key, wp_basename( $path ), (int) $attachment_id );
 		return ( '' === $tmp ) ? $path : $tmp;
