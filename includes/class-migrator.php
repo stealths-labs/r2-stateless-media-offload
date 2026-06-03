@@ -271,6 +271,7 @@ class Migrator {
 				'key'      => $key,
 				'size'     => $file['size'],
 				'filename' => $file['filename'],
+				'relative' => $file['relative'], // Uploads-relative path (canonical).
 			);
 		}
 
@@ -442,15 +443,19 @@ class Migrator {
 	 * @return string Absolute path, or '' when not derivable.
 	 */
 	private function local_path_for( $attachment_id, $size, array $item ) {
-		if ( '' === $size ) {
-			$path = get_attached_file( $attachment_id );
-			return is_string( $path ) ? $path : '';
-		}
-		$original = get_attached_file( $attachment_id );
-		if ( ! is_string( $original ) || '' === $original ) {
+		// Resolve against the canonical uploads dir using the item's known
+		// uploads-relative path. Deliberately NOT get_attached_file(): in
+		// Stateless mode the Local_Fallback filter rewrites that to a temp
+		// restore path, which would send every variant (and original_image)
+		// under the temp dir instead of wp-content/uploads.
+		if ( empty( $item['relative'] ) ) {
 			return '';
 		}
-		return trailingslashit( dirname( $original ) ) . $item['filename'];
+		$uploads = wp_get_upload_dir();
+		if ( ! empty( $uploads['error'] ) || empty( $uploads['basedir'] ) ) {
+			return '';
+		}
+		return trailingslashit( $uploads['basedir'] ) . ltrim( (string) $item['relative'], '/' );
 	}
 
 	/**

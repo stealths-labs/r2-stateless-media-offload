@@ -274,7 +274,13 @@ class Migration_Runner {
 			) {
 				$state['pass']        = (int) $state['pass'] + 1;
 				$state['pass_errors'] = 0;
-				$state['processed']   = 0;     // Re-count progress for the new pass.
+				// Re-counting for the new pass so the admin UI reflects the FINAL
+				// pass (library state) rather than the sum across passes — items
+				// that succeed on retry should drop out of these counts. Matches
+				// the WP-CLI summary. uploaded/bytes stay cumulative (real work).
+				$state['processed']   = 0;
+				$state['skipped']     = 0;
+				$state['errors']      = 0;
 				$state['cursor']      = '';    // Re-scan from the first attachment.
 				$result['done']       = false; // Keep the run going.
 			}

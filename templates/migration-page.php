@@ -50,10 +50,11 @@ $r2offload_configured = $settings->is_configured();
 		<tr>
 			<th scope="row"><label for="r2offload-mig-mode"><?php esc_html_e( 'Mode', 'r2-stateless-media-offload' ); ?></label></th>
 			<td>
+				<?php $r2offload_mode = isset( $state['mode'] ) ? (string) $state['mode'] : 'upload'; ?>
 				<select id="r2offload-mig-mode" <?php disabled( ! empty( $state['running'] ) ); ?>>
-					<option value="upload"><?php esc_html_e( 'Migrate (upload to R2)', 'r2-stateless-media-offload' ); ?></option>
-					<option value="dry-run"><?php esc_html_e( 'Dry run (count + size, no upload)', 'r2-stateless-media-offload' ); ?></option>
-					<option value="verify"><?php esc_html_e( 'Verify (check objects exist in R2)', 'r2-stateless-media-offload' ); ?></option>
+					<option value="upload" <?php selected( $r2offload_mode, 'upload' ); ?>><?php esc_html_e( 'Migrate (upload to R2)', 'r2-stateless-media-offload' ); ?></option>
+					<option value="dry-run" <?php selected( $r2offload_mode, 'dry-run' ); ?>><?php esc_html_e( 'Dry run (count + size, no upload)', 'r2-stateless-media-offload' ); ?></option>
+					<option value="verify" <?php selected( $r2offload_mode, 'verify' ); ?>><?php esc_html_e( 'Verify (check objects exist in R2)', 'r2-stateless-media-offload' ); ?></option>
 				</select>
 			</td>
 		</tr>
