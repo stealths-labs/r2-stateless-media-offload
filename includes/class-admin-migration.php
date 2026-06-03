@@ -233,6 +233,7 @@ JS;
 	private function guard() {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_send_json_error( array( 'message' => __( 'Permission denied.', 'r2-stateless-media-offload' ) ), 403 );
+			return; // wp_send_json_error already exits; explicit for static analysis.
 		}
 		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
 	}

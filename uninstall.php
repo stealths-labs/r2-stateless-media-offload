@@ -39,10 +39,25 @@ function r2offload_uninstall_cleanup_site() {
 // Options and post-meta are per-site, so on a network clean every site — mirrors
 // Migration_Runner::on_deactivate(). number => 0 means "no limit".
 if ( is_multisite() ) {
+	// On a very large network the synchronous per-site cleanup can approach PHP's
+	// max_execution_time. Stop ~10s short of it rather than fataling mid-uninstall:
+	// the only cost of an unreached site is harmless leftover options/meta (the
+	// plugin is gone either way), which a network admin can mop up via WP-CLI, e.g.
+	//   wp site list --field=url | xargs -I% wp option delete r2offload_settings --url=%
+	$r2offload_max      = (int) ini_get( 'max_execution_time' );
+	$r2offload_deadline = ( $r2offload_max > 0 ) ? time() + max( 10, $r2offload_max - 10 ) : 0; // 0 = no limit (e.g. CLI).
+	$r2offload_bailed   = false;
 	foreach ( get_sites( array( 'fields' => 'ids', 'number' => 0 ) ) as $r2offload_site_id ) {
+		if ( $r2offload_deadline && time() >= $r2offload_deadline ) {
+			$r2offload_bailed = true;
+			break;
+		}
 		switch_to_blog( (int) $r2offload_site_id );
 		r2offload_uninstall_cleanup_site();
 		restore_current_blog();
+	}
+	if ( $r2offload_bailed ) {
+		error_log( 'r2offload uninstall: approached max_execution_time; some network sites still hold plugin options/meta — clean up via WP-CLI if needed.' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 	}
 } else {
 	r2offload_uninstall_cleanup_site();

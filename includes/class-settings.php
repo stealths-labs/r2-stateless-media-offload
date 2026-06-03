@@ -246,7 +246,7 @@ class Settings {
 				$files[]           = array(
 					'relative' => $orig_rel,
 					'size'     => 'original_image',
-					'filename' => $orig,
+					'filename' => wp_basename( $orig ), // Key is a sibling basename; see the sizes loop.
 				);
 			}
 		}
@@ -256,8 +256,8 @@ class Settings {
 				if ( empty( $size_data['file'] ) ) {
 					continue;
 				}
-				$filename = (string) $size_data['file'];
-				$rel      = $dir . $filename;
+				$size_file = (string) $size_data['file'];
+				$rel       = $dir . $size_file;
 				if ( isset( $seen[ $rel ] ) ) {
 					continue;
 				}
@@ -265,7 +265,16 @@ class Settings {
 				$files[]      = array(
 					'relative' => $rel,
 					'size'     => (string) $size_name,
-					'filename' => $filename,
+					// R2 keys are always siblings in the original's directory (the
+					// rewriter rebuilds them as <original dir>/<basename>), so a size
+					// 'file' carrying a directory component — some third-party size
+					// generators emit subpaths, and core supports them via
+					// path_join(dirname(file), size['file']) — must collapse to its
+					// basename for the key, or the upload key keeps the subdir while
+					// the render/delete keys drop it (orphaned object + 404 in
+					// Stateless). 'relative' keeps the subpath so the LOCAL file is
+					// still found.
+					'filename' => wp_basename( $size_file ),
 				);
 			}
 		}

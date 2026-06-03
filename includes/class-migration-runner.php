@@ -641,7 +641,7 @@ class Migration_Runner {
 	 */
 	private function count_attachments() {
 		global $wpdb;
-		return (int) $wpdb->get_var(
+		return (int) $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- constant query, no user input; result is cached in state['total'] for the run.
 			"SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_type = 'attachment' AND post_status != 'trash'"
 		);
 	}
