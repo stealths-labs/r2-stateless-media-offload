@@ -726,6 +726,10 @@ class Migrator {
 		$result = '';
 		if ( ! empty( $parts['scheme'] ) ) {
 			$result .= $parts['scheme'] . '://';
+		} elseif ( ! empty( $parts['host'] ) ) {
+			// Protocol-relative URL (e.g. //cdn.example.com/…): preserve the '//'
+			// prefix so the reconstructed URL stays valid.
+			$result .= '//';
 		}
 		if ( ! empty( $parts['user'] ) ) {
 			$result .= $parts['user'];

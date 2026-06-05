@@ -169,17 +169,18 @@ jQuery(function($){
 				if(res && res.success){
 					render(res.data);
 					if(res.data.running){ setTimeout(poll, 1500); } else { polling = false; }
-				} else { polling = false; }
+				} else { polling = false; $spinner.removeClass('is-active'); $bar.removeClass('r2offload-running'); }
 			})
 			.fail(function(){ polling = false; $spinner.removeClass('is-active'); $bar.removeClass('r2offload-running'); $txt.text('Connection lost — reload or click a button to retry.'); });
 	}
 	function startPolling(){ if(!polling){ polling = true; poll(); } }
 	function showError(res, fallback){ $txt.text((res && res.data && res.data.message) ? res.data.message : fallback); }
 
+	function clearRunningUI(){ $spinner.removeClass('is-active'); $bar.removeClass('r2offload-running'); }
 	$start.on('click', function(){
 		$.post(ajaxurl, { action:'r2offload_migrate_start', nonce:R2OFFLOAD_MIG.nonce, mode:$mode.val() })
 			.done(function(res){ if(res && res.success){ render(res.data); startPolling(); } else { showError(res, 'Could not start the migration.'); } })
-			.fail(function(){ $txt.text('Connection lost — reload or try again.'); $spinner.removeClass('is-active'); });
+			.fail(function(){ clearRunningUI(); $txt.text('Connection lost — reload or try again.'); });
 	});
 	// One button toggles Pause (while running) and Resume (while paused).
 	$pause.on('click', function(){
@@ -190,12 +191,12 @@ jQuery(function($){
 				if(res && res.success){ render(res.data); if(res.data.running){ startPolling(); } }
 				else { showError(res, resume ? 'Could not resume the migration.' : 'Could not pause the migration.'); }
 			})
-			.fail(function(){ $txt.text('Connection lost — reload or try again.'); $spinner.removeClass('is-active'); });
+			.fail(function(){ clearRunningUI(); $txt.text('Connection lost — reload or try again.'); });
 	});
 	$stop.on('click', function(){
 		$.post(ajaxurl, { action:'r2offload_migrate_cancel', nonce:R2OFFLOAD_MIG.nonce })
 			.done(function(res){ if(res && res.success){ render(res.data); } else { showError(res, 'Could not stop the migration.'); } })
-			.fail(function(){ $txt.text('Connection lost — reload or try again.'); $spinner.removeClass('is-active'); });
+			.fail(function(){ clearRunningUI(); $txt.text('Connection lost — reload or try again.'); });
 	});
 
 	// Initial state + resume polling if a migration is already running.
