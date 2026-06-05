@@ -12,6 +12,15 @@
 defined( 'ABSPATH' ) || exit;
 
 $r2offload_configured = $settings->is_configured();
+
+// Authoritative resumability is supplied by render_page() (Migration_Runner::
+// is_resumable()); default to false only if a caller forgets. "has run" = a run
+// is active or paused, which drives both the buttons and the mode lock.
+if ( ! isset( $r2offload_resumable ) ) {
+	$r2offload_resumable = false;
+}
+$r2offload_running = ! empty( $state['running'] );
+$r2offload_has_run = $r2offload_running || $r2offload_resumable;
 ?>
 <div class="wrap">
 	<h1><?php esc_html_e( 'Migrate Media to R2', 'r2-stateless-media-offload' ); ?></h1>
@@ -61,7 +70,7 @@ $r2offload_configured = $settings->is_configured();
 			<th scope="row"><label for="r2offload-mig-mode"><?php esc_html_e( 'Mode', 'r2-stateless-media-offload' ); ?></label></th>
 			<td>
 				<?php $r2offload_mode = isset( $state['mode'] ) ? (string) $state['mode'] : 'upload'; ?>
-				<select id="r2offload-mig-mode" <?php disabled( ! empty( $state['running'] ) ); ?>>
+				<select id="r2offload-mig-mode" <?php disabled( $r2offload_has_run ); ?>>
 					<option value="upload" <?php selected( $r2offload_mode, 'upload' ); ?>><?php esc_html_e( 'Migrate (upload to R2)', 'r2-stateless-media-offload' ); ?></option>
 					<option value="dry-run" <?php selected( $r2offload_mode, 'dry-run' ); ?>><?php esc_html_e( 'Dry run (count + size, no upload)', 'r2-stateless-media-offload' ); ?></option>
 					<option value="verify" <?php selected( $r2offload_mode, 'verify' ); ?>><?php esc_html_e( 'Verify (check objects exist in R2)', 'r2-stateless-media-offload' ); ?></option>
@@ -71,22 +80,25 @@ $r2offload_configured = $settings->is_configured();
 	</table>
 
 	<?php
-	// Authoritative resumability is always supplied by render_page() via
-	// Migration_Runner::is_resumable(); default to false only if a future
-	// caller forgets to (rather than re-deriving the condition here).
-	if ( ! isset( $r2offload_resumable ) ) {
-		$r2offload_resumable = false;
-	}
+	// Button state machine (mirrored live by the JS); $r2offload_has_run computed
+	// up top (a run is active or paused):
+	//   Start — enabled only when idle/done (no active or paused run).
+	//   Pause — enabled when a run is active or paused; one toggle button labelled
+	//           "Pause" while running and "Resume" while paused.
+	//   Stop  — terminal (not resumable); enabled when a run is active or paused.
+	$r2offload_pause_lbl = $r2offload_running
+		? __( 'Pause', 'r2-stateless-media-offload' )
+		: __( 'Resume', 'r2-stateless-media-offload' );
 	?>
 	<p>
 		<?php // Not gated on credentials: a dry-run preview (count + size) runs without them, matching `wp r2offload sync --dry-run`. Upload/verify without credentials return a clear error. ?>
-		<button type="button" class="button button-primary" id="r2offload-mig-start" <?php disabled( ! empty( $state['running'] ) ); ?>>
+		<button type="button" class="button button-primary" id="r2offload-mig-start" <?php disabled( $r2offload_has_run ); ?>>
 			<?php esc_html_e( 'Start', 'r2-stateless-media-offload' ); ?>
 		</button>
-		<button type="button" class="button" id="r2offload-mig-resume" <?php disabled( ! $r2offload_resumable ); ?> style="<?php echo $r2offload_resumable ? '' : 'display:none;'; ?>">
-			<?php esc_html_e( 'Resume', 'r2-stateless-media-offload' ); ?>
+		<button type="button" class="button" id="r2offload-mig-pause" <?php disabled( ! $r2offload_has_run ); ?>>
+			<?php echo esc_html( $r2offload_pause_lbl ); ?>
 		</button>
-		<button type="button" class="button" id="r2offload-mig-stop" <?php disabled( empty( $state['running'] ) ); ?>>
+		<button type="button" class="button" id="r2offload-mig-stop" <?php disabled( ! $r2offload_has_run ); ?>>
 			<?php esc_html_e( 'Stop', 'r2-stateless-media-offload' ); ?>
 		</button>
 	</p>
@@ -98,5 +110,7 @@ $r2offload_configured = $settings->is_configured();
 		<p id="r2offload-mig-text" aria-live="polite" style="margin-top:.5em;">
 			<?php esc_html_e( 'Idle', 'r2-stateless-media-offload' ); ?>
 		</p>
+		<p id="r2offload-mig-migrated" aria-live="polite" style="margin:.25em 0 0;font-weight:600;display:none;"></p>
+		<div id="r2offload-mig-errors" class="notice notice-error inline" style="display:none;margin:.75em 0 0;padding:.5em .75em;"></div>
 	</div>
 </div>

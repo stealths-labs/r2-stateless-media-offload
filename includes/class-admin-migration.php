@@ -38,6 +38,7 @@ class Admin_Migration {
 		add_action( 'wp_ajax_r2offload_migrate_start', array( $this, 'ajax_start' ) );
 		add_action( 'wp_ajax_r2offload_migrate_resume', array( $this, 'ajax_resume' ) );
 		add_action( 'wp_ajax_r2offload_migrate_stop', array( $this, 'ajax_stop' ) );
+		add_action( 'wp_ajax_r2offload_migrate_cancel', array( $this, 'ajax_cancel' ) );
 		add_action( 'wp_ajax_r2offload_migrate_status', array( $this, 'ajax_status' ) );
 	}
 
@@ -66,7 +67,14 @@ class Admin_Migration {
 		}
 		wp_enqueue_script( 'jquery' );
 		wp_add_inline_script( 'jquery', 'window.R2OFFLOAD_MIG=' . wp_json_encode(
-			array( 'nonce' => wp_create_nonce( self::AJAX_NONCE ) )
+			array(
+				'nonce'     => wp_create_nonce( self::AJAX_NONCE ),
+				'pause'     => __( 'Pause', 'r2-stateless-media-offload' ),
+				'resume'    => __( 'Resume', 'r2-stateless-media-offload' ),
+				'errorsLbl' => __( 'Recent errors', 'r2-stateless-media-offload' ),
+				'migrated'  => __( 'Migrated to R2', 'r2-stateless-media-offload' ),
+				'remaining' => __( 'remaining', 'r2-stateless-media-offload' ),
+			)
 		) . ';' );
 		wp_add_inline_script( 'jquery', $this->inline_js() );
 	}
@@ -78,31 +86,65 @@ class Admin_Migration {
 		return <<<'JS'
 jQuery(function($){
 	var $bar = $('#r2offload-mig-bar'), $txt = $('#r2offload-mig-text');
-	var $start = $('#r2offload-mig-start'), $stop = $('#r2offload-mig-stop');
-	var $resume = $('#r2offload-mig-resume');
+	var $migrated = $('#r2offload-mig-migrated'), $errs = $('#r2offload-mig-errors');
+	var $start = $('#r2offload-mig-start'), $pause = $('#r2offload-mig-pause'), $stop = $('#r2offload-mig-stop');
 	var $mode = $('#r2offload-mig-mode');
 	var polling = false;
 
 	function render(s){
 		var pct = s.total > 0 ? Math.min(100, Math.round((s.processed / s.total) * 100)) : 0;
 		$bar.css('width', pct + '%').text(pct + '%');
-		// Authoritative flag from the server (Migration_Runner::is_resumable());
-		// fall back to a local derivation only if an older response omits it.
+		// "resumable" = PAUSED (can resume), authoritative from the server; a
+		// terminal Stop is cancelled and NOT resumable.
 		var resumable = ('resumable' in s) ? !!s.resumable
-			: (!s.running && !s.finished_at && ((s.started_at > 0) || s.cursor));
-		// A retry pass (pass > 1) re-walks the library, so processed resets to 0;
-		// label it so the reset reads as "Pass N" rather than lost progress.
+			: (!s.running && !s.finished_at && !s.cancelled && ((s.started_at > 0) || s.cursor));
+		var hasRun = !!s.running || resumable; // A run is active or paused.
 		var passLabel = (s.pass && s.pass > 1) ? ' (retry pass ' + s.pass + ')' : '';
+		var statusWord = s.running ? 'Running'
+			: (s.finished_at ? 'Done'
+			: (resumable ? 'Paused'
+			: (s.cancelled ? 'Stopped' : 'Idle')));
 		$txt.text(
-			(s.running ? 'Running' : (s.finished_at ? 'Done' : (resumable ? 'Stopped' : 'Idle'))) + passLabel +
+			statusWord + passLabel +
 			' — ' + s.processed + ' / ' + s.total + ' processed' +
 			'  ·  uploaded ' + s.uploaded + '  ·  skipped ' + s.skipped + '  ·  errors ' + s.errors
 		);
+
+		// Migrated vs remaining (library-wide truth from the server count).
+		if ( $migrated.length ) {
+			if ( typeof s.migrated !== 'undefined' && s.total > 0 ) {
+				var remaining = Math.max(0, s.total - s.migrated);
+				$migrated.text(R2OFFLOAD_MIG.migrated + ': ' + s.migrated + ' / ' + s.total + '  ·  ' + remaining + ' ' + R2OFFLOAD_MIG.remaining).show();
+			} else if ( typeof s.migrated !== 'undefined' && s.migrated > 0 ) {
+				$migrated.text(R2OFFLOAD_MIG.migrated + ': ' + s.migrated).show();
+			} else {
+				$migrated.hide();
+			}
+		}
+
+		// Recent error messages — rendered as plain text (never HTML), so an R2
+		// error body can't inject markup.
+		if ( $errs.length ) {
+			var list = (s.recent_errors && s.recent_errors.length) ? s.recent_errors : [];
+			if ( list.length ) {
+				var $h = $('<p>').css({margin:'0 0 .25em', fontWeight:'600'}).text(R2OFFLOAD_MIG.errorsLbl + ' (' + s.errors + '):');
+				var $ul = $('<ul>').css({margin:0, paddingLeft:'1.2em'});
+				list.forEach(function(msg){ $ul.append($('<li>').text(msg)); });
+				$errs.empty().append($h).append($ul).show();
+			} else {
+				$errs.hide().empty();
+			}
+		}
+
 		if (s.mode) { $mode.val(s.mode); }
-		$start.prop('disabled', !!s.running);
-		$stop.prop('disabled', !s.running);
-		$resume.prop('disabled', !resumable).toggle(!!resumable);
-		$mode.prop('disabled', !!s.running);
+		// Buttons: Start only when idle/done; Pause/Stop only when a run is
+		// active or paused; the Pause button doubles as Resume when paused.
+		$start.prop('disabled', hasRun);
+		$pause.prop('disabled', !hasRun)
+			.text( s.running ? R2OFFLOAD_MIG.pause : R2OFFLOAD_MIG.resume )
+			.data('action', s.running ? 'pause' : 'resume');
+		$stop.prop('disabled', !hasRun);
+		$mode.prop('disabled', hasRun);
 	}
 	function poll(){
 		$.post(ajaxurl, { action:'r2offload_migrate_status', nonce:R2OFFLOAD_MIG.nonce })
@@ -115,22 +157,26 @@ jQuery(function($){
 			.fail(function(){ polling = false; $txt.text('Connection lost — reload or click a button to retry.'); });
 	}
 	function startPolling(){ if(!polling){ polling = true; poll(); } }
+	function showError(res, fallback){ $txt.text((res && res.data && res.data.message) ? res.data.message : fallback); }
 
-	function showError(res, fallback){
-		$txt.text((res && res.data && res.data.message) ? res.data.message : fallback);
-	}
 	$start.on('click', function(){
 		$.post(ajaxurl, { action:'r2offload_migrate_start', nonce:R2OFFLOAD_MIG.nonce, mode:$mode.val() })
 			.done(function(res){ if(res && res.success){ render(res.data); startPolling(); } else { showError(res, 'Could not start the migration.'); } })
 			.fail(function(){ $txt.text('Connection lost — reload or try again.'); });
 	});
-	$resume.on('click', function(){
-		$.post(ajaxurl, { action:'r2offload_migrate_resume', nonce:R2OFFLOAD_MIG.nonce })
-			.done(function(res){ if(res && res.success){ render(res.data); if(res.data.running){ startPolling(); } } else { showError(res, 'Could not resume the migration.'); } })
+	// One button toggles Pause (while running) and Resume (while paused).
+	$pause.on('click', function(){
+		var resume = ( $pause.data('action') === 'resume' );
+		var endpoint = resume ? 'r2offload_migrate_resume' : 'r2offload_migrate_stop';
+		$.post(ajaxurl, { action: endpoint, nonce:R2OFFLOAD_MIG.nonce })
+			.done(function(res){
+				if(res && res.success){ render(res.data); if(res.data.running){ startPolling(); } }
+				else { showError(res, resume ? 'Could not resume the migration.' : 'Could not pause the migration.'); }
+			})
 			.fail(function(){ $txt.text('Connection lost — reload or try again.'); });
 	});
 	$stop.on('click', function(){
-		$.post(ajaxurl, { action:'r2offload_migrate_stop', nonce:R2OFFLOAD_MIG.nonce })
+		$.post(ajaxurl, { action:'r2offload_migrate_cancel', nonce:R2OFFLOAD_MIG.nonce })
 			.done(function(res){ if(res && res.success){ render(res.data); } else { showError(res, 'Could not stop the migration.'); } })
 			.fail(function(){ $txt.text('Connection lost — reload or try again.'); });
 	});
@@ -182,6 +228,9 @@ JS;
 	 */
 	private function respond( array $state ) {
 		$state['resumable'] = $this->runner->is_resumable( $state );
+		// Library-wide "migrated" count (attachments registered on R2), so the UI
+		// can show migrated vs remaining independent of the current pass/cursor.
+		$state['migrated'] = $this->runner->count_synced();
 		wp_send_json_success( $state );
 	}
 
@@ -210,6 +259,14 @@ JS;
 	public function ajax_stop() {
 		$this->guard();
 		$this->respond( $this->runner->stop() );
+	}
+
+	/**
+	 * AJAX: terminally stop a migration (not resumable — the UI returns to Start).
+	 */
+	public function ajax_cancel() {
+		$this->guard();
+		$this->respond( $this->runner->cancel() );
 	}
 
 	/**

@@ -46,6 +46,10 @@ class Migration_Runner {
 	// this only bounds how long a genuinely dead lock blocks progress.
 	const LOCK_TTL     = 1800;
 
+	// How many recent per-item error messages to keep in the state for the admin
+	// UI. A small ring buffer — enough to be useful, bounded so the option stays small.
+	const MAX_RECENT_ERRORS = 20;
+
 	/** @var Settings */
 	private $settings;
 
@@ -135,7 +139,9 @@ class Migration_Runner {
 			'total'       => 0,
 			'started_at'  => 0,
 			'finished_at' => 0,
+			'cancelled'   => false,    // Terminally stopped (not resumable) vs paused.
 			'last_error'  => '',
+			'recent_errors' => array(), // Last few per-item error messages for the UI.
 		);
 	}
 
@@ -230,7 +236,54 @@ class Migration_Runner {
 	public function is_resumable( array $state ) {
 		return empty( $state['running'] )
 			&& empty( $state['finished_at'] )
+			&& empty( $state['cancelled'] ) // A terminal Stop is not resumable; only a Pause is.
 			&& ( (int) $state['started_at'] > 0 || '' !== (string) $state['cursor'] );
+	}
+
+	/**
+	 * Append messages to the state's recent-errors ring buffer, keeping only the
+	 * most recent MAX_RECENT_ERRORS. Pure helper — returns the new array.
+	 *
+	 * @param array    $state
+	 * @param string[] $messages
+	 * @return string[]
+	 */
+	private function append_recent_errors( array $state, array $messages ) {
+		$existing = isset( $state['recent_errors'] ) && is_array( $state['recent_errors'] ) ? $state['recent_errors'] : array();
+		$merged   = array_merge( $existing, array_values( $messages ) );
+		return array_slice( $merged, -self::MAX_RECENT_ERRORS );
+	}
+
+	/**
+	 * Count attachments already registered as offloaded to R2 (the "migrated"
+	 * number for the UI). A single indexed COUNT on the postmeta meta_key index —
+	 * cheap enough to call on each status poll.
+	 *
+	 * @return int
+	 */
+	public function count_synced() {
+		global $wpdb;
+		return (int) $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- single indexed COUNT, constant query, no user input.
+			$wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = %s", Settings::META_SYNCED )
+		);
+	}
+
+	/**
+	 * Terminally stop a run: halt like stop()/pause (CAS-safe, preserving the
+	 * worker's latest counters for display), then mark it cancelled so it is NOT
+	 * resumable — the UI returns to "Start" rather than offering "Resume".
+	 * Clears run_id so any late worker discards its write.
+	 *
+	 * @return array The persisted state.
+	 */
+	public function cancel() {
+		$this->stop(); // running=false (CAS-preserves counters), clears schedule + lock.
+		wp_cache_delete( self::STATE_OPTION, 'options' );
+		$state              = $this->fresh_state();
+		$state['cancelled'] = true;
+		$state['run_id']    = '';
+		update_option( self::STATE_OPTION, $state, false );
+		return $state;
 	}
 
 	/**
@@ -382,7 +435,8 @@ class Migration_Runner {
 					$state['fail_streak'] = 0;
 				}
 				if ( ! empty( $result['errors'] ) ) {
-					$state['last_error'] = (string) end( $result['errors'] );
+					$state['last_error']    = (string) end( $result['errors'] );
+					$state['recent_errors'] = $this->append_recent_errors( $state, array_map( 'strval', $result['errors'] ) );
 				}
 			} catch ( \Throwable $e ) {
 				// Record the failure and let the next tick retry rather than
@@ -390,8 +444,9 @@ class Migration_Runner {
 				// caught by the circuit breaker below.
 				++$state['errors'];
 				++$state['fail_streak'];
-				$state['last_error'] = $e->getMessage();
-				$result              = array( 'done' => false );
+				$state['last_error']    = $e->getMessage();
+				$state['recent_errors'] = $this->append_recent_errors( $state, array( $e->getMessage() ) );
+				$result                 = array( 'done' => false );
 			}
 
 			// Multi-pass: the cursor advances past attachments that errored, so a
@@ -411,11 +466,12 @@ class Migration_Runner {
 				// pass (library state) rather than the sum across passes — items
 				// that succeed on retry should drop out of these counts. Matches
 				// the WP-CLI summary. uploaded/bytes stay cumulative (real work).
-				$state['processed']   = 0;
-				$state['skipped']     = 0;
-				$state['errors']      = 0;
-				$state['cursor']      = '';    // Re-scan from the first attachment.
-				$result['done']       = false; // Keep the run going.
+				$state['processed']     = 0;
+				$state['skipped']       = 0;
+				$state['errors']        = 0;
+				$state['recent_errors'] = array(); // Show only the final pass's errors.
+				$state['cursor']        = '';    // Re-scan from the first attachment.
+				$result['done']         = false; // Keep the run going.
 			}
 
 			// Reconcile-and-persist. A concurrent stop()/start() can change the
