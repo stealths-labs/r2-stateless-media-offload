@@ -340,8 +340,14 @@ class URL_Rewriter {
 		// re-encoding it would double-encode '%' for non-ASCII/space filenames
 		// (e.g. %E5%9B%BE → %25E5%259B%25BE), breaking the URL on every render.
 		$base = $this->settings->public_base_url();
-		if ( '' !== $base && 0 === strpos( (string) $local_url, $base ) ) {
-			return $local_url;
+		if ( '' !== $base ) {
+			// Match on a path boundary, not a raw prefix: a bare strpos would also
+			// match a sibling host like "https://cdn.example.com.evil/…" and wrongly
+			// skip rewriting. Accept the base exactly or followed by "/".
+			$base_prefix = trailingslashit( $base );
+			if ( $local_url === $base || 0 === strpos( (string) $local_url, $base_prefix ) ) {
+				return $local_url;
+			}
 		}
 		$dir = dirname( $key );
 		$dir = ( '.' === $dir ) ? '' : trailingslashit( $dir );

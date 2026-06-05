@@ -144,9 +144,14 @@ class Offloader {
 			return $metadata;
 		}
 
-		// Upload succeeded (no variant errored) — record it so the sibling metadata
-		// filter in this request doesn't re-upload the same objects.
-		$this->offloaded[ $attachment_id ] = true;
+		// Upload succeeded (no variant errored). Dedupe the sibling metadata filter
+		// in this request ONLY if something actually reached R2: a pass where every
+		// variant was skipped as unreadable sent nothing, so the later
+		// wp_update_attachment_metadata pass (which may run after guard_temp_metadata
+		// repairs metadata['file']) must stay free to offload the corrected files.
+		if ( ! empty( $upload['uploaded_paths'] ) ) {
+			$this->offloaded[ $attachment_id ] = true;
+		}
 
 		$fully_present = ( $upload['original_uploaded'] && $upload['all_present'] );
 

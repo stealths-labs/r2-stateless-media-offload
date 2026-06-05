@@ -308,6 +308,15 @@ class Migration_Runner {
 		// cursor concurrently. acquire_lock() is atomic, so only one worker
 		// wins; the rest just report current state.
 		if ( ! $this->acquire_lock() ) {
+			// Another worker holds the lock. It may be a SUPERSEDED worker from a
+			// prior run after a quick stop→start: it still holds the lock and will
+			// exit on a run_id mismatch WITHOUT scheduling a tick, while this fresh
+			// run's single start() tick gives up here. Reschedule so progress
+			// resumes once the lock frees — otherwise the migration stalls with
+			// running=true and no queued tick until someone reopens the page.
+			// schedule_next() is idempotent (no-op if a tick is already due); the
+			// next tick re-checks running and stops rescheduling once the run ends.
+			$this->schedule_next();
 			return $state;
 		}
 
