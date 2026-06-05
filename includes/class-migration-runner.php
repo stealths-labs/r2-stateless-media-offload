@@ -270,7 +270,7 @@ class Migration_Runner {
 		// trashed attachment, inflating "migrated" past "total".
 		return (int) $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- indexed COUNT over a join, constant query, no user input.
 			$wpdb->prepare(
-				"SELECT COUNT(*) FROM {$wpdb->postmeta} pm
+				"SELECT COUNT(DISTINCT p.ID) FROM {$wpdb->postmeta} pm
 				 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
 				 WHERE pm.meta_key = %s AND p.post_type = 'attachment' AND p.post_status != 'trash'",
 				Settings::META_SYNCED
