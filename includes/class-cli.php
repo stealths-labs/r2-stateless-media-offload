@@ -555,23 +555,31 @@ class CLI {
 					}
 				}
 
+				// Keys whose local file already exists (idempotent re-runs, CDN
+				// mode) need no download — exclude them up front so the dry-run
+				// count and the per-attachment "restored N file(s)" log report
+				// real work rather than overstating it.
+				$download_keys = array_values( array_filter(
+					$objects,
+					function ( $key ) use ( $local_map, $relative_dir, $uploads_basedir ) {
+						$name      = wp_basename( $key );
+						$local_rel = isset( $local_map[ $name ] ) ? $local_map[ $name ] : $relative_dir . $name;
+						return ! file_exists( $uploads_basedir . $local_rel );
+					}
+				) );
+
 				if ( $dry_run ) {
-					\WP_CLI::log( sprintf( '  #%d: would restore %d file(s)', $id, count( $objects ) ) );
-					$dry_count += count( $objects );
+					\WP_CLI::log( sprintf( '  #%d: would restore %d file(s)', $id, count( $download_keys ) ) );
+					$dry_count += count( $download_keys );
 					continue;
 				}
 
-				// Download every key in the ownership manifest.
+				// Download every key still missing locally.
 				$att_errors = array();
-				foreach ( $objects as $key ) {
+				foreach ( $download_keys as $key ) {
 					$name       = wp_basename( $key );
 					$local_rel  = isset( $local_map[ $name ] ) ? $local_map[ $name ] : $relative_dir . $name;
 					$local_path = $uploads_basedir . $local_rel;
-
-					// Skip if already restored (idempotent re-runs).
-					if ( file_exists( $local_path ) ) {
-						continue;
-					}
 
 					$result = $client->download_object( $key, $local_path );
 					if ( is_wp_error( $result ) ) {
@@ -595,7 +603,7 @@ class CLI {
 				delete_post_meta( $id, Settings::META_OBJECTS );
 				++$restored;
 
-				\WP_CLI::log( sprintf( '  #%d: restored %d file(s) — registration cleared.', $id, count( $objects ) ) );
+				\WP_CLI::log( sprintf( '  #%d: restored %d file(s) — registration cleared.', $id, count( $download_keys ) ) );
 			}
 
 			$this->flush_object_cache();
