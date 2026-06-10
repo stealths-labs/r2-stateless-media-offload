@@ -332,20 +332,24 @@ class Offloader {
 			// (CDN-like) until a custom domain is configured.
 			if ( $is_stateless && $this->settings->serves_public_url() ) {
 				$cleanup_paths = $upload['uploaded_paths'];
-				// Shutdown-backstop pass for an IMAGE: the metadata snapshot
-				// cannot prove generation finished, and a future REST
-				// post-process resume (or a two-step importer's later
-				// wp_generate_attachment_metadata request) regenerates missing
-				// sub-sizes FROM THE ORIGINAL — so an image's original must
-				// stay on disk until a complete inline pass confirms
-				// generation is done. Confirmed-uploaded SIZE files are safe
-				// to clean even here: a resume never reads existing size files
-				// (sizes already in metadata are skipped, missing ones are
-				// recreated from the original). Non-image attachments never
-				// have a generation pass, so their original is cleaned from
-				// the backstop too — without this they would quietly keep
-				// CDN-like local copies on every backstop-only flow.
-				if ( ! $allow_cleanup && wp_attachment_is_image( $attachment_id ) ) {
+				// Shutdown-backstop pass for a sub-size SOURCE (image, or PDF —
+				// WordPress generates JPEG page previews from PDFs when Imagick
+				// is available): the metadata snapshot cannot prove generation
+				// finished, and a future REST post-process resume (or a
+				// two-step importer's later wp_generate_attachment_metadata
+				// request) regenerates missing sub-sizes FROM THE ORIGINAL —
+				// so the original must stay on disk until a complete inline
+				// pass confirms generation is done. Confirmed-uploaded SIZE
+				// files are safe to clean even here: a resume never reads
+				// existing size files (sizes already in metadata are skipped,
+				// missing ones are recreated from the original). Attachments
+				// that can never have a generation pass (video/audio/docs)
+				// have their original cleaned from the backstop too — without
+				// this they would quietly keep CDN-like local copies on every
+				// backstop-only flow.
+				$is_subsize_source = wp_attachment_is_image( $attachment_id )
+					|| 'application/pdf' === get_post_mime_type( $attachment_id );
+				if ( ! $allow_cleanup && $is_subsize_source ) {
 					$cleanup_paths = array();
 					foreach ( $upload['uploaded_paths'] as $uploaded_path ) {
 						if ( isset( $pending[ $uploaded_path ] ) && $pending[ $uploaded_path ] !== $original_key ) {
