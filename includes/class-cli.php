@@ -151,10 +151,7 @@ class CLI {
 		// its in-flight batch and holding the lock. Dry-run/verify are read-only
 		// (HEADs only), so they may run alongside a background migration.
 		if ( ! $dry_run && ! $verify ) {
-			$runner = new Migration_Runner( $settings );
-			if ( ! empty( $runner->state()['running'] ) || $runner->has_active_worker() ) {
-				\WP_CLI::error( 'A background migration is running or finishing a batch (Media → Migrate to R2). Stop it and wait a moment for the current batch to finish before running an upload sync.' );
-			}
+			$this->refuse_if_migration_active( $settings );
 		}
 
 		$batch   = $this->positive_int_arg( $assoc_args, 'batch', 100 );
@@ -219,6 +216,28 @@ class CLI {
 		}
 		if ( is_callable( array( $wp_object_cache, '__remoteset' ) ) ) {
 			$wp_object_cache->__remoteset();
+		}
+	}
+
+	/**
+	 * Error out when a background migration is running or a worker is still
+	 * finishing a batch. CLI commands that write to the library (sync upload,
+	 * pull, reset) do NOT share the background runner's lock, so running them
+	 * alongside an active migration would put two unsynchronised writers on
+	 * the same attachments' _r2offload_* meta. Check BOTH the running flag AND
+	 * the live lock: just after a Stop the run is no longer "running" but a
+	 * worker may still be finishing its in-flight batch and holding the lock.
+	 *
+	 * @param Settings $settings
+	 */
+	private function refuse_if_migration_active( $settings ) {
+		$runner = new Migration_Runner( $settings );
+		// Bust the per-request options cache before reading: a stale cached
+		// running=false (read earlier this request, before a background start())
+		// would defeat the control-plane check and let two writers interleave.
+		wp_cache_delete( Migration_Runner::STATE_OPTION, 'options' );
+		if ( ! empty( $runner->state()['running'] ) || $runner->has_active_worker() ) {
+			\WP_CLI::error( 'A background migration is running or finishing a batch (Media → Migrate to R2). Stop it and wait a moment for the current batch to finish before running this command.' );
 		}
 	}
 
@@ -330,6 +349,426 @@ class CLI {
 		}
 
 		return $totals;
+	}
+
+	/**
+	 * Restore all R2-offloaded attachments back to the local /uploads directory
+	 * and remove their offload registration. Run this before deactivating the
+	 * plugin in Stateless mode to avoid 404s.
+	 *
+	 * Each attachment's postmeta is only cleared after ALL its files download
+	 * successfully, so a partial failure leaves the R2 copy serving that
+	 * attachment via the rewriter (images stay live) while local restoration
+	 * continues for the rest.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--batch=<n>]
+	 * : Attachments processed per batch (default: 50).
+	 *
+	 * [--dry-run]
+	 * : Report what would be downloaded; write nothing.
+	 *
+	 * [--yes]
+	 * : Skip the confirmation prompt.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp r2offload pull --dry-run
+	 *     wp r2offload pull --yes
+	 *     wp r2offload pull --batch=25
+	 *
+	 * @when after_wp_load
+	 */
+	public function pull( $args, $assoc_args ) {
+		$dry_run = ! empty( $assoc_args['dry-run'] );
+		$batch   = $this->positive_int_arg( $assoc_args, 'batch', 50 );
+
+		// Dry-run only reads local postmeta (reports what would be downloaded),
+		// so it doesn't require credentials — matching `sync --dry-run`. When
+		// credentials ARE available, dry-run still gets a client so the legacy
+		// HEAD filter below can run and its counts match a real pull; without
+		// them, legacy counts degrade to an upper bound.
+		$settings = Plugin::instance()->settings();
+		if ( ! $dry_run && ! $settings->is_configured() ) {
+			\WP_CLI::error( 'R2 not configured. Set R2OFFLOAD_* constants in wp-config.php or via settings.' );
+		}
+		$client = ( ! $dry_run || $settings->is_configured() ) ? Plugin::instance()->client() : null;
+
+		// A live pull deletes _r2offload_* meta that an active background
+		// migration worker writes — same unsynchronised-writers hazard as an
+		// upload sync, so apply the same guard. Dry-run is read-only.
+		if ( ! $dry_run ) {
+			$this->refuse_if_migration_active( $settings );
+		}
+
+		if ( ! $dry_run && empty( $assoc_args['yes'] ) ) {
+			\WP_CLI::confirm(
+				'This will download every R2-offloaded file back to your server and remove the R2 registration. ' .
+				'Are you sure you want to continue?'
+			);
+		}
+
+		$uploads = wp_get_upload_dir();
+		if ( ! empty( $uploads['error'] ) || empty( $uploads['basedir'] ) ) {
+			\WP_CLI::error( 'Could not determine the uploads directory.' );
+		}
+		$uploads_basedir = trailingslashit( $uploads['basedir'] );
+
+		global $wpdb;
+
+		$last_id   = 0;
+		$restored  = 0;
+		$skipped   = 0;
+		$errors    = 0;
+		$dry_count = 0;
+
+		\WP_CLI::log( sprintf( 'Mode: %s   Batch size: %d', $dry_run ? 'dry-run' : 'pull', $batch ) );
+		\WP_CLI::log( '' );
+
+		do {
+			// Keyset pagination (ID > last seen), NOT offset: successful restores
+			// delete META_SYNCED, shrinking the result set under an offset walk —
+			// offset += batch would then skip the next batch of still-synced
+			// attachments and the command could report success with files still
+			// only on R2.
+			$ids = $wpdb->get_col( $wpdb->prepare( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- keyset pagination over postmeta; WP_Query cannot express ID > x.
+				"SELECT DISTINCT pm.post_id
+				 FROM {$wpdb->postmeta} pm
+				 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+				 WHERE pm.meta_key = %s AND p.post_type = 'attachment' AND pm.post_id > %d
+				 ORDER BY pm.post_id ASC
+				 LIMIT %d",
+				Settings::META_SYNCED,
+				$last_id,
+				$batch
+			) );
+
+			if ( empty( $ids ) ) {
+				break;
+			}
+			$last_id = (int) end( $ids );
+
+			foreach ( $ids as $id ) {
+				$id = (int) $id;
+
+				$base_key     = (string) get_post_meta( $id, Settings::META_KEY, true );
+				$relative_raw = (string) get_post_meta( $id, '_wp_attached_file', true );
+				$objects_raw  = get_post_meta( $id, Settings::META_OBJECTS, true );
+				$objects      = Settings::normalize_object_keys( is_array( $objects_raw ) ? $objects_raw : array() );
+
+				if ( '' === $relative_raw ) {
+					\WP_CLI::warning( sprintf( '#%d: missing attached-file path — skipping.', $id ) );
+					++$skipped;
+					continue;
+				}
+
+				if ( '' === $base_key ) {
+					// Mirror Settings::resolve_object_key(): a synced attachment with
+					// no stored key is still served from R2 under the key derived
+					// from the current path_prefix + _wp_attached_file — restore it
+					// rather than skipping it.
+					$base_key = $settings->object_key( $relative_raw );
+				}
+
+				if ( empty( $objects ) ) {
+					// Legacy attachment (offloaded before the META_OBJECTS ownership
+					// manifest existed) — derive the expected keys from current
+					// metadata, mirroring Offloader::r2_keys_for(). Only OPTIONAL
+					// keys (edit-history backup sizes, which may never have been
+					// uploaded) are HEAD-filtered when missing; a REQUIRED key (the
+					// original or a size the current metadata references) missing
+					// from R2 fails the attachment so its meta is never cleared
+					// while a file the site serves can't be restored. The HEAD
+					// checks also run in dry-run when credentials allow, keeping
+					// its counts honest.
+					$derived = $this->derive_legacy_object_keys( $id, $base_key, ltrim( $relative_raw, '/' ) );
+					if ( null !== $client ) {
+						$missing_required = array();
+						foreach ( $derived['required'] as $key ) {
+							if ( ! $client->object_exists( $key ) ) {
+								$missing_required[] = $key;
+							}
+						}
+						if ( ! empty( $missing_required ) ) {
+							\WP_CLI::warning( sprintf(
+								'[#%d] legacy registration: %d required object(s) missing from R2 (%s) — R2 meta kept.',
+								$id,
+								count( $missing_required ),
+								implode( ', ', $missing_required )
+							) );
+							++$errors;
+							continue;
+						}
+						$derived['optional'] = array_values( array_filter( $derived['optional'], array( $client, 'object_exists' ) ) );
+					}
+					$objects = array_merge( $derived['required'], $derived['optional'] );
+					if ( empty( $objects ) ) {
+						\WP_CLI::warning( sprintf( '#%d: no objects found in R2 for legacy registration — skipping.', $id ) );
+						++$skipped;
+						continue;
+					}
+				}
+
+				// Map each key's basename back to its uploads-relative LOCAL path.
+				// Manifest keys can carry DIFFERENT prefixes (path_prefix may have
+				// changed between offloads), so stripping one inferred prefix would
+				// misplace older keys. And R2 keys always collapse a size's subdir
+				// to a sibling basename (see Settings::enumerate_files) while the
+				// LOCAL file may live in a subdir carried by the size's 'file'
+				// field — so neither the key's path nor its bare basename is the
+				// local path. enumerate_files() is the single source of truth for
+				// that mapping; backup sizes (absent from live metadata) are bare
+				// basenames in the original's directory, covered by the fallback.
+				$relative_clean = ltrim( $relative_raw, '/' );
+				$relative_dir   = dirname( $relative_clean );
+				$relative_dir   = ( '.' === $relative_dir ) ? '' : trailingslashit( $relative_dir );
+				$local_map      = array();
+				$ambiguous      = array();
+				foreach ( Settings::enumerate_files( wp_get_attachment_metadata( $id ), $relative_clean ) as $file ) {
+					$name = (string) $file['filename'];
+					if ( isset( $local_map[ $name ] ) && $local_map[ $name ] !== $file['relative'] ) {
+						// Two different local paths share one basename — and R2 keys
+						// collapse to basenames, so only ONE object exists for both.
+						// Restoring it to either path leaves the other missing; the
+						// upload-side collision already lost one file's content.
+						// Skip rather than clear meta over an incomplete restore.
+						$ambiguous[ $name ] = true;
+						continue;
+					}
+					$local_map[ $name ] = $file['relative'];
+				}
+				if ( ! empty( $ambiguous ) ) {
+					\WP_CLI::warning( sprintf(
+						'#%d: duplicate basenames in attachment metadata (%s) — skipping to avoid an incomplete restore.',
+						$id,
+						implode( ', ', array_keys( $ambiguous ) )
+					) );
+					++$skipped;
+					continue;
+				}
+
+				if ( $dry_run ) {
+					\WP_CLI::log( sprintf( '  #%d: would restore %d file(s)', $id, count( $objects ) ) );
+					$dry_count += count( $objects );
+					continue;
+				}
+
+				// Download every key in the ownership manifest.
+				$att_errors = array();
+				foreach ( $objects as $key ) {
+					$name       = wp_basename( $key );
+					$local_rel  = isset( $local_map[ $name ] ) ? $local_map[ $name ] : $relative_dir . $name;
+					$local_path = $uploads_basedir . $local_rel;
+
+					// Skip if already restored (idempotent re-runs).
+					if ( file_exists( $local_path ) ) {
+						continue;
+					}
+
+					$result = $client->download_object( $key, $local_path );
+					if ( is_wp_error( $result ) ) {
+						$att_errors[] = sprintf( '%s: %s', $key, $result->get_error_message() );
+					}
+				}
+
+				if ( ! empty( $att_errors ) ) {
+					foreach ( $att_errors as $err ) {
+						\WP_CLI::warning( sprintf( '[#%d] %s', $id, $err ) );
+					}
+					++$errors;
+					// Leave meta intact: attachment still served from R2 via the rewriter.
+					continue;
+				}
+
+				// All files restored — clear the offload registration.
+				delete_post_meta( $id, Settings::META_SYNCED );
+				delete_post_meta( $id, Settings::META_KEY );
+				delete_post_meta( $id, Settings::META_SYNCED_AT );
+				delete_post_meta( $id, Settings::META_OBJECTS );
+				++$restored;
+
+				\WP_CLI::log( sprintf( '  #%d: restored %d file(s) — registration cleared.', $id, count( $objects ) ) );
+			}
+
+			$this->flush_object_cache();
+
+		} while ( count( $ids ) === $batch );
+
+		\WP_CLI::log( '' );
+		\WP_CLI::log( '--- Summary ---' );
+		if ( $dry_run ) {
+			\WP_CLI::log( sprintf( 'Would restore: %d file(s) across attachments', $dry_count ) );
+			\WP_CLI::success( 'Dry-run complete — nothing downloaded.' );
+			return;
+		}
+		\WP_CLI::log( 'Restored: ' . $restored . ' attachment(s)' );
+		\WP_CLI::log( 'Skipped:  ' . $skipped . ' attachment(s)  (missing/invalid registration — see warnings)' );
+		\WP_CLI::log( 'Errors:   ' . $errors . ' attachment(s)  (R2 meta kept; images still served from R2)' );
+		if ( $errors > 0 ) {
+			\WP_CLI::error( sprintf( 'Pull finished with %d error(s) — see warnings above. Re-run to retry.', $errors ) );
+		}
+		if ( $skipped > 0 ) {
+			// Skipped attachments were NOT restored — don't claim deactivation is
+			// safe, and exit non-zero so automation can detect the partial result.
+			\WP_CLI::error( sprintf( 'Pull finished but %d attachment(s) were skipped — review the warnings above before deactivating.', $skipped ) );
+		}
+		\WP_CLI::success( 'Pull complete — deactivating the plugin is now safe.' );
+	}
+
+	/**
+	 * Derive the expected R2 keys for an attachment that has no META_OBJECTS
+	 * ownership manifest (offloaded before the manifest existed). Mirrors the
+	 * derivation in Offloader::r2_keys_for(): the stored original key, every
+	 * file enumerated from live attachment metadata, plus edit-history backup
+	 * sizes — all in the stored original's directory.
+	 *
+	 * Keys are split by obligation: 'required' (the original + every size the
+	 * CURRENT metadata references — files the site actively serves) and
+	 * 'optional' (edit-history backup sizes, which may never have been
+	 * uploaded). A required key missing from R2 must fail the restore; an
+	 * optional one may be silently filtered.
+	 *
+	 * @param int    $id       Attachment ID.
+	 * @param string $base_key Stored original R2 key (META_KEY).
+	 * @param string $relative Uploads-relative attached file path.
+	 * @return array{required:string[],optional:string[]}
+	 */
+	private function derive_legacy_object_keys( $id, $base_key, $relative ) {
+		$dir = dirname( $base_key );
+		$dir = ( '.' === $dir ) ? '' : trailingslashit( $dir );
+
+		$required = array( $base_key );
+		$metadata = wp_get_attachment_metadata( $id );
+		foreach ( Settings::enumerate_files( $metadata, $relative ) as $file ) {
+			$required[] = $dir . $file['filename'];
+		}
+
+		$optional = array();
+		$backups  = get_post_meta( $id, '_wp_attachment_backup_sizes', true );
+		if ( is_array( $backups ) ) {
+			foreach ( $backups as $backup ) {
+				if ( ! empty( $backup['file'] ) ) {
+					$optional[] = $dir . wp_basename( (string) $backup['file'] );
+				}
+			}
+		}
+		$required = array_values( array_unique( $required ) );
+		// A key can't be both: required wins.
+		$optional = array_values( array_diff( array_unique( $optional ), $required ) );
+
+		return array(
+			'required' => $required,
+			'optional' => $optional,
+		);
+	}
+
+	/**
+	 * Clear all R2 offload registration from the media library WITHOUT downloading
+	 * files. Use this when switching to a different offload plugin that has already
+	 * taken ownership of the files, or to force a clean re-migration.
+	 *
+	 * WARNING: In Stateless mode (local copies deleted) this makes images 404
+	 * immediately after running. Run `pull` instead unless the new provider is
+	 * already serving the files.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--dry-run]
+	 * : Report how many attachments would be reset; change nothing.
+	 *
+	 * [--yes]
+	 * : Skip the confirmation prompt.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp r2offload reset --dry-run
+	 *     wp r2offload reset --yes
+	 *
+	 * @when after_wp_load
+	 */
+	public function reset( $args, $assoc_args ) {
+		$dry_run = ! empty( $assoc_args['dry-run'] );
+
+		// A live reset deletes _r2offload_* meta that an active background
+		// migration worker writes — refuse to interleave, like sync/pull.
+		if ( ! $dry_run ) {
+			$this->refuse_if_migration_active( Plugin::instance()->settings() );
+		}
+
+		if ( ! $dry_run && empty( $assoc_args['yes'] ) ) {
+			\WP_CLI::confirm(
+				'This removes all R2 offload registration (postmeta) from every attachment. ' .
+				'In Stateless mode this causes immediate 404s — run `pull` first unless another plugin is already serving the files. ' .
+				'Are you sure?'
+			);
+		}
+
+		global $wpdb;
+
+		$meta_keys = array(
+			Settings::META_SYNCED,
+			Settings::META_KEY,
+			Settings::META_SYNCED_AT,
+			Settings::META_OBJECTS,
+		);
+
+		// Count/collect over ALL four keys, matching exactly what the live
+		// delete touches: a partially-failed offload can leave e.g. META_KEY
+		// without META_SYNCED, so counting META_SYNCED alone would under-report.
+		$placeholders = implode( ',', array_fill( 0, count( $meta_keys ), '%s' ) );
+
+		if ( $dry_run ) {
+			$count = (int) $wpdb->get_var( $wpdb->prepare( // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- placeholders are literal %s built from a fixed-size array.
+				"SELECT COUNT(DISTINCT post_id) FROM {$wpdb->postmeta} WHERE meta_key IN ({$placeholders})",
+				$meta_keys
+			) );
+			\WP_CLI::log( sprintf( 'Would reset: %d attachment(s)', $count ) );
+			\WP_CLI::success( 'Dry-run complete — nothing changed.' );
+			return;
+		}
+
+		// Chunked keyset walk so a multi-million-attachment library never
+		// materialises every affected ID in PHP at once. Each chunk: collect the
+		// IDs (BEFORE deleting, so their meta caches can be invalidated after),
+		// delete that chunk's rows, then invalidate those caches — raw DELETEs
+		// bypass delete_post_meta()'s cache updates, and on a persistent object
+		// cache (Redis/Memcached) the rewriter would otherwise keep seeing the
+		// attachments as offloaded — and keep serving R2 URLs — until the
+		// entries expire.
+		$chunk_size  = 1000;
+		$last_id     = 0;
+		$deleted     = 0;
+		$attachments = 0;
+
+		do {
+			$chunk = $wpdb->get_col( $wpdb->prepare( // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- placeholders are literal %s built from a fixed-size array.
+				"SELECT DISTINCT post_id FROM {$wpdb->postmeta}
+				 WHERE meta_key IN ({$placeholders}) AND post_id > %d
+				 ORDER BY post_id ASC
+				 LIMIT %d",
+				array_merge( $meta_keys, array( $last_id, $chunk_size ) )
+			) );
+			if ( empty( $chunk ) ) {
+				break;
+			}
+			$last_id      = (int) end( $chunk );
+			$attachments += count( $chunk );
+
+			$id_placeholders = implode( ',', array_fill( 0, count( $chunk ), '%d' ) );
+			$deleted        += (int) $wpdb->query( $wpdb->prepare( // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- placeholders are literal %s/%d built from fixed-size arrays.
+				"DELETE FROM {$wpdb->postmeta}
+				 WHERE meta_key IN ({$placeholders}) AND post_id IN ({$id_placeholders})",
+				array_merge( $meta_keys, array_map( 'intval', $chunk ) )
+			) );
+
+			foreach ( $chunk as $post_id ) {
+				wp_cache_delete( (int) $post_id, 'post_meta' );
+			}
+			$this->flush_object_cache();
+		} while ( count( $chunk ) === $chunk_size );
+
+		\WP_CLI::success( sprintf( 'Reset complete — removed %d postmeta row(s) across %d attachment(s).', $deleted, $attachments ) );
 	}
 
 	/**
